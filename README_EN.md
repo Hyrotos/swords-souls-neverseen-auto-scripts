@@ -48,8 +48,8 @@ python --version
 
 ## Install dependencies
 
-Download and extract this repository, then run `INSTALL.bat` once. You can also
-open a terminal in the repository root and run:
+Download and extract this repository, open a terminal in its root folder, and
+run:
 
 ```powershell
 python -m pip install "frida>=17.2,<18" "mss>=10.0" "numpy>=2.0" "opencv-python>=4.10"
@@ -78,5 +78,4 @@ Each folder contains a dedicated `README_EN.md` with mode-specific details.
 
 - The scripts depend on the current Unity/Mono game internals. A game update may
   require the memory readers to be adjusted.
-- Automation may affect progress and saved data. Back up your save before use.
 - Use at your own risk and follow the rules applicable to the game and Steam.
