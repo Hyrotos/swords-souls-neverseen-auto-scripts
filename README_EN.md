@@ -54,13 +54,6 @@ Open PowerShell or Command Prompt in any location and run:
 python -m pip install "frida>=17.2,<18" "mss>=10.0" "numpy>=2.0" "opencv-python>=4.10"
 ```
 
-If the terminal is open in the repository root, you can instead install from
-the combined requirements file:
-
-```powershell
-python -m pip install -r requirements.txt
-```
-
 ## Run
 
 1. Start the game and enter the desired training mode.

@@ -56,13 +56,6 @@ python --version
 python -m pip install "frida>=17.2,<18" "mss>=10.0" "numpy>=2.0" "opencv-python>=4.10"
 ```
 
-Если терминал открыт в корневой папке проекта, зависимости также можно
-установить из файла:
-
-```powershell
-python -m pip install -r requirements.txt
-```
-
 ## Запуск
 
 1. Запустите игру и откройте нужную тренировку.
