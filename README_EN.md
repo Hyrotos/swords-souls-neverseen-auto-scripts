@@ -48,14 +48,14 @@ python --version
 
 ## Install dependencies
 
-Download and extract this repository, open a terminal in its root folder, and
-run:
+Open PowerShell or Command Prompt in any location and run:
 
 ```powershell
 python -m pip install "frida>=17.2,<18" "mss>=10.0" "numpy>=2.0" "opencv-python>=4.10"
 ```
 
-Or install from the combined requirements file:
+If the terminal is open in the repository root, you can instead install from
+the combined requirements file:
 
 ```powershell
 python -m pip install -r requirements.txt
