@@ -18,7 +18,7 @@ or mouse input. They do not modify the game files.
 
 ## Video demonstration
 
-[▶ Watch or download the video (MP4, 98.34 MB)](demo/swords-souls-auto-scripts-demo.mp4?raw=1)
+[▶ Watch or download the video (MP4, 98.34 MB)](swords-souls-auto-scripts-demo.mp4?raw=1)
 
 The video demonstrates dependency installation and all five automation scripts.
 
