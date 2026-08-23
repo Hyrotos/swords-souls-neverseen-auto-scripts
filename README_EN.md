@@ -16,6 +16,12 @@ Neverseen** on Windows.
 The helpers read the running game's state through Frida and send normal keyboard
 or mouse input. They do not modify the game files.
 
+## Video demonstration
+
+[▶ Watch or download the video (MP4, 98.34 MB)](demo/swords-souls-auto-scripts-demo.mp4?raw=1)
+
+The video demonstrates dependency installation and all five automation scripts.
+
 ## Requirements
 
 - 64-bit Windows 10 or Windows 11;
