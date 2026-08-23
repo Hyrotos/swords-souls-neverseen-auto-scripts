@@ -18,7 +18,7 @@ or mouse input. They do not modify the game files.
 
 ## Video demonstration
 
-[▶ Watch or download the video (MP4, 98.34 MB)](swords-souls-auto-scripts-demo.mp4?raw=1)
+[▶ Watch or download the video (MP4, 98.34 MB)](https://github.com/ibadullaevrahil67-maker/swords-souls-neverseen-auto-scripts/releases/download/v1.0.0/swords-souls-auto-scripts-demo.mp4)
 
 The video demonstrates dependency installation and all five automation scripts.
 
@@ -64,8 +64,7 @@ python -m pip install -r requirements.txt
 ## Run
 
 1. Start the game and enter the desired training mode.
-2. Run the root `START.bat` and choose a mode from 1 to 5. You may also launch
-   the BAT file inside the corresponding mode folder.
+2. Open the desired training folder and run the BAT file inside it.
 3. Return to the game window.
 
 Shared controls:
