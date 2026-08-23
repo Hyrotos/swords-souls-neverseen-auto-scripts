@@ -1,6 +1,6 @@
 # Swords & Souls Neverseen — Auto Training Scripts
 
-[Русская версия](README.md)
+[Русская версия](README_RU.md)
 
 A collection of five Python automation helpers for **Swords & Souls
 Neverseen** on Windows.
