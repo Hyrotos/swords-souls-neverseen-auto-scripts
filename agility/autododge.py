@@ -19,7 +19,7 @@ INPUT_KEYBOARD = 1
 KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_SCANCODE = 0x0008
 SCAN_CODES = {"W": 0x11, "A": 0x1E, "S": 0x1F, "D": 0x20}
-user32 = ctypes.windll.user32
+user32 = ctypes.windll.user32 if sys.platform == "win32" else None
 ULONG_PTR = wintypes.WPARAM
 
 
@@ -115,34 +115,65 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
-    if sys.platform != "win32":
-        print("Windows only.")
-        return 2
     args = parse_args()
-    hwnd = find_game_window()
+    backend = None
+    if sys.platform == "win32":
+        hwnd = find_game_window()
+    elif sys.platform.startswith("linux"):
+        try:
+            from linux_platform import LinuxPlatform
+
+            backend = LinuxPlatform(WINDOW_TITLE)
+            hwnd = backend.find_game_window()
+        except Exception as error:
+            print(f"Could not initialize the Linux/X11 backend: {error}")
+            print("Check the X11 display and install agility/requirements.txt.")
+            return 2
+    else:
+        print(f"Unsupported platform: {sys.platform}")
+        return 2
     if hwnd is None:
         print("Game window was not found. Start the game first.")
+        if backend is not None:
+            backend.close()
         return 1
+
+    def game_is_focused() -> bool:
+        if backend is not None:
+            return backend.is_focused(hwnd)
+        return user32.GetForegroundWindow() == hwnd
+
+    def hotkey_pressed(key: str) -> bool:
+        if backend is not None:
+            return backend.consume_hotkey(key)
+        virtual_key = VK_F8 if key == "F8" else VK_F9
+        return bool(user32.GetAsyncKeyState(virtual_key) & 1)
+
+    def send_key(key: str, is_down: bool) -> None:
+        if backend is not None:
+            backend.send_key(key, is_down)
+        else:
+            send_scan_code(SCAN_CODES[key], is_down)
 
     # Start safely paused. F8 enables the automation when the player is ready.
     enabled = False
     active = False
-    held: set[int] = set()
+    held: set[str] = set()
     press_lock = threading.Lock()
     last_press = -100.0
     press_count = 0
 
-    def release(scan: int) -> None:
+    def release(key: str) -> None:
         with press_lock:
-            if scan in held:
+            if key in held:
                 try:
-                    send_scan_code(scan, False)
+                    send_key(key, False)
                 finally:
-                    held.discard(scan)
+                    held.discard(key)
 
     def on_dodge(payload: dict) -> None:
         nonlocal last_press, press_count
-        if not enabled or user32.GetForegroundWindow() != hwnd:
+        if not enabled or not game_is_focused():
             return
         key = str(payload.get("key", ""))
         if key not in SCAN_CODES:
@@ -153,11 +184,10 @@ def main() -> int:
                 return
             last_press = now
             press_count += 1
-            scan = SCAN_CODES[key]
             if not args.dry_run:
-                send_scan_code(scan, True)
-                held.add(scan)
-                timer = threading.Timer(args.hold_ms / 1000.0, release, args=(scan,))
+                send_key(key, True)
+                held.add(key)
+                timer = threading.Timer(args.hold_ms / 1000.0, release, args=(key,))
                 timer.daemon = True
                 timer.start()
             if payload.get("kind") == "attack":
@@ -176,10 +206,20 @@ def main() -> int:
                 )
 
     try:
-        reader = AgilityMemoryReader(window_process_id(hwnd), on_dodge)
+        game_pid = (
+            backend.get_process_id(hwnd)
+            if backend is not None
+            else window_process_id(hwnd)
+        )
+        reader = AgilityMemoryReader(game_pid, on_dodge)
         actual_lead = reader.set_lead_ms(args.lead_ms)
     except Exception as error:
         print(f"Could not attach to game memory: {error}")
+        if backend is not None:
+            from wine_frida import print_attach_hint
+
+            backend.close()
+            print_attach_hint(error)
         return 1
 
     print("Swords & Souls agility helper is ready.")
@@ -191,12 +231,12 @@ def main() -> int:
 
     try:
         while True:
-            if user32.GetAsyncKeyState(VK_F9) & 1:
+            if hotkey_pressed("F9"):
                 break
-            if user32.GetAsyncKeyState(VK_F8) & 1:
+            if hotkey_pressed("F8"):
                 enabled = not enabled
                 print("Automation ON." if enabled else "Automation PAUSED.")
-            focused = user32.GetForegroundWindow() == hwnd
+            focused = game_is_focused()
             wanted = bool(enabled and focused)
             if wanted != active:
                 reader.set_active(wanted)
@@ -212,11 +252,13 @@ def main() -> int:
             reader.close()
         except Exception:
             pass
-        for scan in tuple(held):
+        for key in tuple(held):
             try:
-                send_scan_code(scan, False)
-            except OSError:
+                send_key(key, False)
+            except Exception:
                 pass
+        if backend is not None:
+            backend.close()
     print("Stopped.")
     return 0
 

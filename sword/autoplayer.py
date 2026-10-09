@@ -1,4 +1,4 @@
-"""Low-latency W/A/D helper for Swords & Souls Neverseen (Windows only).
+"""Low-latency W/A/D helper for Swords & Souls Neverseen.
 
 The script watches the three reaction circles and taps the corresponding key
 when a red flying item enters a circle.  It never sends keys while the game is
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
+from contextlib import nullcontext
 import ctypes
 from ctypes import wintypes
 import math
@@ -40,7 +41,7 @@ INPUT_KEYBOARD = 1
 KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_SCANCODE = 0x0008
 
-user32 = ctypes.windll.user32
+user32 = ctypes.windll.user32 if sys.platform == "win32" else None
 
 
 def enable_dpi_awareness() -> None:
@@ -472,10 +473,6 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
-    if sys.platform != "win32":
-        print("This script supports Windows only.")
-        return 2
-
     args = parse_args()
     if not 0.01 <= args.trigger_radius <= 0.10:
         print("--trigger-radius must be between 0.01 and 0.10")
@@ -484,38 +481,93 @@ def main() -> int:
         print("--release-radius must be larger than --trigger-radius")
         return 2
 
-    enable_dpi_awareness()
-    hwnd = find_game_window(args.window_title)
+    backend = None
+    if sys.platform == "win32":
+        enable_dpi_awareness()
+        hwnd = find_game_window(args.window_title)
+    elif sys.platform.startswith("linux"):
+        try:
+            if __package__:
+                from .linux_platform import LinuxPlatform
+            else:
+                from linux_platform import LinuxPlatform
+
+            backend = LinuxPlatform(args.window_title)
+            hwnd = backend.find_game_window()
+        except Exception as error:
+            print(f"Could not initialize the Linux/X11 backend: {error}")
+            print("Check the X11 display and install sword/requirements.txt.")
+            return 2
+    else:
+        print(f"Unsupported platform: {sys.platform}")
+        return 2
+
     if hwnd is None:
         print(f'Game window containing "{args.window_title}" was not found.')
         print("Start the game first, then run this script again.")
+        if backend is not None:
+            backend.close()
         return 1
+
+    process_id = (
+        backend.get_process_id(hwnd)
+        if backend is not None
+        else get_window_process_id(hwnd)
+    )
+
+    def game_is_focused() -> bool:
+        if backend is not None:
+            return backend.is_focused(hwnd)
+        return user32.GetForegroundWindow() == hwnd
+
+    def send_key(key: str, is_down: bool) -> None:
+        if args.dry_run:
+            return
+        if backend is not None:
+            backend.send_key(key, is_down)
+        else:
+            send_scan_code(SCAN_CODES[key], is_down)
+
+    def hotkey_pressed(key: str) -> bool:
+        if backend is not None:
+            return backend.consume_hotkey(key)
+        virtual_key = VK_F8 if key == "F8" else VK_F9
+        return bool(user32.GetAsyncKeyState(virtual_key) & 1)
+
+    def current_client_box() -> dict[str, int] | None:
+        if backend is not None:
+            return backend.get_client_box(hwnd)
+        return get_client_box(hwnd)
+
+    wayland_capture = None
 
     lanes = [LaneState(key, *TARGET_LAYOUT[key]) for key in ("W", "A", "D")]
     lanes_by_key = {lane.key: lane for lane in lanes}
     # Start safely paused. F8 enables the automation when the player is ready.
     active = False
-    held_scans: set[int] = set()
+    held_keys: set[str] = set()
     last_box_update = 0.0
     client_box: dict[str, int] | None = None
     focus_reported = False
     frames = 0
     fps_started = time.perf_counter()
     learned_item_speed = 0.0
+    black_capture_since: float | None = None
+    capture_unavailable = False
     memory_reader = None
     memory_reader_active = False
     memory_press_lock = threading.Lock()
 
-    def release_memory_key(scan: int) -> None:
+    def release_memory_key(key: str) -> None:
         try:
-            send_scan_code(scan, False)
-        except OSError:
+            send_key(key, False)
+        except Exception:
             pass
 
     def on_memory_press(key: str, source: str) -> None:
         """Press immediately on a one-shot event read from the game."""
         nonlocal active
-        if not active or user32.GetForegroundWindow() != hwnd:
+        if not active or not game_is_focused():
             return
         lane = lanes_by_key[key]
         now_memory = time.perf_counter()
@@ -530,14 +582,11 @@ def main() -> int:
                 f"{key}  {source}-memory #{lane.presses}",
                 flush=True,
             )
-            if args.dry_run:
-                return
-            scan = SCAN_CODES[key]
-            send_scan_code(scan, True)
+            send_key(key, True)
             release_timer = threading.Timer(
                 args.hold_ms / 1000.0,
                 release_memory_key,
-                args=(scan,),
+                args=(key,),
             )
             release_timer.daemon = True
             release_timer.start()
@@ -552,41 +601,77 @@ def main() -> int:
         from mannequin_memory import MannequinMemoryReader
 
         memory_reader = MannequinMemoryReader(
-            get_window_process_id(hwnd), on_memory_parry, on_memory_item
+            process_id, on_memory_parry, on_memory_item
         )
     except Exception as error:
         print(f"Memory reader unavailable: {error}")
+        if backend is not None:
+            from wine_frida import print_attach_hint
+
+            print_attach_hint(error)
         print("Using the visual mannequin detector as a fallback.")
+
+    # Screen capture is only the fallback, so Wayland's sharing dialog appears
+    # only when the memory reader could not be attached.
+    if memory_reader is None and backend is not None and backend.uses_wayland:
+        box = current_client_box()
+        if box is None:
+            print("The game window has no capturable client area yet.")
+            backend.close()
+            return 2
+        print(
+            "Wayland capture: approve the screen-sharing dialog and select "
+            "the Swords & Souls Neverseen window."
+        )
+        try:
+            if __package__:
+                from .wayland_capture import WaylandWindowCapture
+            else:
+                from wayland_capture import WaylandWindowCapture
+
+            wayland_capture = WaylandWindowCapture(
+                box["width"], box["height"]
+            )
+            print(
+                f"Wayland capture connected: "
+                f"{wayland_capture.width}x{wayland_capture.height}."
+            )
+        except Exception as error:
+            print(f"Could not start Wayland screen capture: {error}")
+            backend.close()
+            return 2
 
     print("Swords & Souls helper v27 (exact memory timing) is ready.")
     print("F8: pause/resume | F9: quit")
     print("DRY RUN: keys will not be sent." if args.dry_run else "Automation is PAUSED. Press F8 to start.")
 
     try:
-        with mss.MSS() as capture:
+        capture_context = (
+            nullcontext(None) if wayland_capture is not None else mss.MSS()
+        )
+        with capture_context as x11_capture:
             while True:
                 now = time.perf_counter()
 
-                if user32.GetAsyncKeyState(VK_F9) & 1:
+                if hotkey_pressed("F9"):
                     break
-                if user32.GetAsyncKeyState(VK_F8) & 1:
+                if hotkey_pressed("F8"):
                     active = not active
                     print("Automation is ON." if active else "Automation is PAUSED.")
 
                 # Release held keys without blocking the capture loop.
                 for lane in lanes:
                     if lane.release_at is not None and now >= lane.release_at:
-                        scan = SCAN_CODES[lane.key]
-                        if scan in held_scans:
-                            send_scan_code(scan, False)
-                            held_scans.discard(scan)
+                        if lane.key in held_keys:
+                            send_key(lane.key, False)
+                            held_keys.discard(lane.key)
                         lane.release_at = None
 
                 if now - last_box_update >= 0.5:
-                    client_box = get_client_box(hwnd)
+                    client_box = current_client_box()
                     last_box_update = now
 
-                focused = user32.GetForegroundWindow() == hwnd
+                focused = game_is_focused()
                 wanted_memory_state = bool(active and focused and client_box is not None)
                 if (
                     memory_reader is not None
@@ -627,7 +712,31 @@ def main() -> int:
                     time.sleep(0.001)
                     continue
 
-                frame = np.asarray(capture.grab(client_box))[:, :, :3]
+                frame = (
+                    wayland_capture.grab()
+                    if wayland_capture is not None
+                    else np.asarray(x11_capture.grab(client_box))[:, :, :3]
+                )
+                if backend is not None and not np.any(frame):
+                    if black_capture_since is None:
+                        black_capture_since = now
+                    elif now - black_capture_since >= 1.5:
+                        print(
+                            "ERROR: screen capture returned only black pixels. "
+                            "Check that the sharing dialog selected the game window.",
+                            flush=True,
+                        )
+                        if wayland_capture is None:
+                            print(
+                                "MSS cannot capture the Wayland-composited frame; "
+                                "the Wayland portal backend was not active.",
+                                flush=True,
+                            )
+                        capture_unavailable = True
+                        break
+                else:
+                    black_capture_since = None
+
                 height, width = frame.shape[:2]
                 scale = min(width, height)
                 trigger_px = args.trigger_radius * scale
@@ -773,9 +882,8 @@ def main() -> int:
                             flush=True,
                         )
                         if not args.dry_run:
-                            scan = SCAN_CODES[lane.key]
-                            send_scan_code(scan, True)
-                            held_scans.add(scan)
+                            send_key(lane.key, True)
+                            held_keys.add(lane.key)
                             lane.release_at = now + args.hold_ms / 1000.0
 
                     # When memory reading is active, mannequin attacks are
@@ -1022,9 +1130,8 @@ def main() -> int:
                             flush=True,
                         )
                         if not args.dry_run:
-                            scan = SCAN_CODES[lane.key]
-                            send_scan_code(scan, True)
-                            held_scans.add(scan)
+                            send_key(lane.key, True)
+                            held_keys.add(lane.key)
                             lane.release_at = now + args.hold_ms / 1000.0
 
                 frames += 1
@@ -1036,6 +1143,9 @@ def main() -> int:
 
     except KeyboardInterrupt:
         pass
+    except Exception as error:
+        print(f"Capture/runtime error: {error}")
+        capture_unavailable = True
     finally:
         if memory_reader is not None:
             try:
@@ -1043,14 +1153,18 @@ def main() -> int:
                 memory_reader.close()
             except Exception:
                 pass
-        for scan in held_scans:
+        for key in held_keys:
             try:
-                send_scan_code(scan, False)
-            except OSError:
+                send_key(key, False)
+            except Exception:
                 pass
+        if wayland_capture is not None:
+            wayland_capture.close()
+        if backend is not None:
+            backend.close()
 
     print("Stopped.")
-    return 0
+    return 2 if capture_unavailable else 0
 
 
 if __name__ == "__main__":

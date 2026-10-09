@@ -1,4 +1,6 @@
 frida>=17.2,<18
+python-xlib>=0.33; sys_platform == "linux"
+dbus-next>=0.2.3; sys_platform == "linux"
 mss>=10.0
 numpy>=2.0
 opencv-python>=4.10

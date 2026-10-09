@@ -3,15 +3,16 @@
 [Русская версия](README.md)
 
 A collection of five Python automation helpers for **Swords & Souls
-Neverseen** on Windows.
+Neverseen**. All modes support Windows and also Linux when the game is running through
+Proton under X11/XWayland.
 
 | Training mode | Folder | Launcher |
 | --- | --- | --- |
-| Sword | [`sword`](sword) | `sword/START_FIXED.bat` |
-| Archery | [`archery`](archery) | `archery/START.bat` |
-| Magic | [`magic`](magic) | `magic/START.bat` |
-| Shield | [`shield`](shield) | `shield/START.bat` |
-| Agility | [`agility`](agility) | `agility/START.bat` |
+| Sword | [`sword`](sword) | Windows: `START_FIXED.bat`; Linux/Proton: `START_LINUX.sh` |
+| Archery | [`archery`](archery) | Windows: `START.bat`; Linux/Proton: `START_LINUX.sh` |
+| Magic | [`magic`](magic) | Windows: `START.bat`; Linux/Proton: `START_LINUX.sh` |
+| Shield | [`shield`](shield) | Windows: `START.bat`; Linux/Proton: `START_LINUX.sh` |
+| Agility | [`agility`](agility) | Windows: `START.bat`; Linux/Proton: `START_LINUX.sh` |
 
 The helpers read the running game's state through Frida and send normal keyboard
 or mouse input. They do not modify the game files.
@@ -24,7 +25,7 @@ The video demonstrates dependency installation and all five automation scripts.
 
 ## Requirements
 
-- 64-bit Windows 10 or Windows 11;
+- 64-bit Windows 10 or Windows 11 for all modes, or Linux with Steam + Proton;
 - the Steam version of Swords & Souls Neverseen;
 - 64-bit Python 3.11 or 3.12;
 - the game and helper must run under the same Windows user.
@@ -48,17 +49,27 @@ python --version
 
 ## Install dependencies
 
-Open PowerShell or Command Prompt in any location and run:
+Open PowerShell or Command Prompt in the repository root and run:
 
 ```powershell
-python -m pip install "frida>=17.2,<18" "mss>=10.0" "numpy>=2.0" "opencv-python>=4.10"
+python -m pip install -r requirements.txt
 ```
+
+On Linux, install the same requirements in the project virtual
+environment; the Linux-only X11 dependency is selected automatically.
 
 ## Run
 
-1. Start the game and enter the desired training mode.
-2. Open the desired training folder and run the BAT file inside it.
-3. Return to the game window.
+On Windows, start the game, enter the desired training mode, and run that
+mode's BAT file. On Linux, start the game through Proton under
+X11/XWayland and run that mode's launcher from the repository root, for
+example `bash shield/START_LINUX.sh`.
+
+To run all five helpers at once, use `START_ALL.bat` on Windows or
+`bash START_ALL_LINUX.sh` on Linux. Each helper only reacts while its own
+training mode is open, so the matching automation plays whichever training you
+enter. Do not start several single-mode launchers side by side instead: on
+Linux, helpers running as separate processes can crash the game when they stop.
 
 Shared controls:
 

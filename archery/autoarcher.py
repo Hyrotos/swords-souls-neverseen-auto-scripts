@@ -21,7 +21,7 @@ MOUSEEVENTF_LEFTUP = 0x0004
 SAFE_AIM_X_RATIO = 0.50
 SAFE_AIM_Y_RATIO = 0.50
 
-user32 = ctypes.windll.user32
+user32 = ctypes.windll.user32 if sys.platform == "win32" else None
 
 
 class MOUSEINPUT(ctypes.Structure):
@@ -105,15 +105,60 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
-    if sys.platform != "win32":
-        print("Windows only.")
-        return 2
     args = parse_args()
-    enable_dpi_awareness()
-    hwnd = find_game_window()
+    backend = None
+    if sys.platform == "win32":
+        enable_dpi_awareness()
+        hwnd = find_game_window()
+    elif sys.platform.startswith("linux"):
+        try:
+            from linux_platform import LinuxPlatform
+
+            backend = LinuxPlatform(WINDOW_TITLE)
+            hwnd = backend.find_game_window()
+        except Exception as error:
+            print(f"Could not initialize the Linux/X11 backend: {error}")
+            print("Check the X11 display and install archery/requirements.txt.")
+            return 2
+    else:
+        print(f"Unsupported platform: {sys.platform}")
+        return 2
     if hwnd is None:
         print("Game window was not found. Start the game first.")
+        if backend is not None:
+            backend.close()
         return 1
+
+    def game_is_focused() -> bool:
+        if backend is not None:
+            return backend.is_focused(hwnd)
+        return user32.GetForegroundWindow() == hwnd
+
+    def hotkey_pressed(key: str) -> bool:
+        if backend is not None:
+            return backend.consume_hotkey(key)
+        virtual_key = VK_F8 if key == "F8" else VK_F9
+        return bool(user32.GetAsyncKeyState(virtual_key) & 1)
+
+    def game_geometry() -> tuple[int, int, int, int] | None:
+        if backend is None:
+            return client_geometry(hwnd)
+        box = backend.get_client_box(hwnd)
+        if box is None:
+            return None
+        return box["left"], box["top"], box["width"], box["height"]
+
+    def set_cursor(x: int, y: int) -> None:
+        if backend is not None:
+            backend.set_cursor_pos(x, y)
+        else:
+            user32.SetCursorPos(x, y)
+
+    def press_mouse(is_down: bool) -> None:
+        if backend is not None:
+            backend.send_mouse_button(is_down)
+        else:
+            mouse_button(MOUSEEVENTF_LEFTDOWN if is_down else MOUSEEVENTF_LEFTUP)
 
     # Start safely paused. F8 enables the automation when the player is ready.
     enabled = False
@@ -133,7 +178,7 @@ def main() -> int:
         nonlocal waiting_for_arrow
         if held:
             if not args.dry_run:
-                mouse_button(MOUSEEVENTF_LEFTUP)
+                press_mouse(False)
             held = False
             if expect_arrow and not args.dry_run:
                 released_shot_sequence = latest_shot_sequence
@@ -143,9 +188,9 @@ def main() -> int:
     def on_aim(payload: dict) -> None:
         nonlocal held, release_at, last_shot, last_report
         nonlocal saw_not_ready, latest_shot_sequence, waiting_for_arrow
-        if not enabled or user32.GetForegroundWindow() != hwnd:
+        if not enabled or not game_is_focused():
             return
-        geometry = client_geometry(hwnd)
+        geometry = game_geometry()
         if geometry is None:
             return
         left, top, width, height = geometry
@@ -162,7 +207,7 @@ def main() -> int:
         with lock:
             now = time.perf_counter()
             latest_shot_sequence = int(payload.get("shotSequence", 0))
-            user32.SetCursorPos(x, y)
+            set_cursor(x, y)
             bow_can_shoot = bool(payload.get("bowCanShoot"))
             if waiting_for_arrow:
                 confirmed = latest_shot_sequence > released_shot_sequence
@@ -186,7 +231,7 @@ def main() -> int:
                 and now - last_shot >= args.cooldown_ms / 1000.0
             ):
                 if not args.dry_run:
-                    mouse_button(MOUSEEVENTF_LEFTDOWN)
+                    press_mouse(True)
                 held = True
                 saw_not_ready = not bow_can_shoot
                 release_at = now + args.hold_max_ms / 1000.0
@@ -203,9 +248,19 @@ def main() -> int:
                 last_report = now
 
     try:
-        reader = ArcheryMemory(process_id(hwnd), on_aim)
+        game_pid = (
+            backend.get_process_id(hwnd)
+            if backend is not None
+            else process_id(hwnd)
+        )
+        reader = ArcheryMemory(game_pid, on_aim)
     except Exception as error:
         print(f"Could not attach to game memory: {error}")
+        if backend is not None:
+            from wine_frida import print_attach_hint
+
+            backend.close()
+            print_attach_hint(error)
         return 1
 
     print("Swords & Souls archery helper v10 is ready.")
@@ -221,15 +276,15 @@ def main() -> int:
             if held and now >= release_at:
                 with lock:
                     release_mouse()
-            if user32.GetAsyncKeyState(VK_F9) & 1:
+            if hotkey_pressed("F9"):
                 break
-            if user32.GetAsyncKeyState(VK_F8) & 1:
+            if hotkey_pressed("F8"):
                 enabled = not enabled
                 if not enabled:
                     with lock:
                         release_mouse(expect_arrow=False)
                 print("Automation ON." if enabled else "Automation PAUSED.")
-            focused = user32.GetForegroundWindow() == hwnd
+            focused = game_is_focused()
             wanted = bool(enabled and focused)
             if wanted != reader_active:
                 reader.set_active(wanted, guide_arrows=not args.dry_run)
@@ -248,6 +303,8 @@ def main() -> int:
         except Exception:
             pass
         reader.close()
+        if backend is not None:
+            backend.close()
     return 0
 
 

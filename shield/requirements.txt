@@ -1,2 +1,2 @@
 frida>=17.2,<18
-
+python-xlib>=0.33; sys_platform == "linux"

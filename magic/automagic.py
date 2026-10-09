@@ -15,7 +15,7 @@ VK_F8 = 0x77
 VK_F9 = 0x78
 SAFE_AIM_X_RATIO = 0.50
 SAFE_AIM_Y_RATIO = 0.50
-user32 = ctypes.windll.user32
+user32 = ctypes.windll.user32 if sys.platform == "win32" else None
 
 
 def enable_dpi_awareness() -> None:
@@ -61,14 +61,53 @@ def client_geometry(hwnd: int) -> tuple[int, int, int, int] | None:
 
 
 def main() -> int:
-    if sys.platform != "win32":
-        print("Windows only.")
+    backend = None
+    if sys.platform == "win32":
+        enable_dpi_awareness()
+        hwnd = find_game_window()
+    elif sys.platform.startswith("linux"):
+        try:
+            from linux_platform import LinuxPlatform
+
+            backend = LinuxPlatform(WINDOW_TITLE)
+            hwnd = backend.find_game_window()
+        except Exception as error:
+            print(f"Could not initialize the Linux/X11 backend: {error}")
+            print("Check the X11 display and install magic/requirements.txt.")
+            return 2
+    else:
+        print(f"Unsupported platform: {sys.platform}")
         return 2
-    enable_dpi_awareness()
-    hwnd = find_game_window()
     if hwnd is None:
         print("Game window was not found. Start the game first.")
+        if backend is not None:
+            backend.close()
         return 1
+
+    def game_is_focused() -> bool:
+        if backend is not None:
+            return backend.is_focused(hwnd)
+        return user32.GetForegroundWindow() == hwnd
+
+    def hotkey_pressed(key: str) -> bool:
+        if backend is not None:
+            return backend.consume_hotkey(key)
+        virtual_key = VK_F8 if key == "F8" else VK_F9
+        return bool(user32.GetAsyncKeyState(virtual_key) & 1)
+
+    def game_geometry() -> tuple[int, int, int, int] | None:
+        if backend is None:
+            return client_geometry(hwnd)
+        box = backend.get_client_box(hwnd)
+        if box is None:
+            return None
+        return box["left"], box["top"], box["width"], box["height"]
+
+    def set_cursor(x: int, y: int) -> None:
+        if backend is not None:
+            backend.set_cursor_pos(x, y)
+        else:
+            user32.SetCursorPos(x, y)
 
     # Start safely paused. F8 enables the automation when the player is ready.
     enabled = False
@@ -76,9 +115,9 @@ def main() -> int:
     last_report = 0.0
 
     def on_aim(payload: dict) -> None:
-        if not enabled or user32.GetForegroundWindow() != hwnd:
+        if not enabled or not game_is_focused():
             return
-        geometry = client_geometry(hwnd)
+        geometry = game_geometry()
         if geometry is None:
             return
         left, top, width, height = geometry
@@ -90,7 +129,7 @@ def main() -> int:
         # Keep it in the same safe central position used by Archery Auto.
         x = left + int(round((width - 1) * SAFE_AIM_X_RATIO))
         y = top + int(round((height - 1) * SAFE_AIM_Y_RATIO))
-        user32.SetCursorPos(x, y)
+        set_cursor(x, y)
 
     def on_scored(payload: dict) -> None:
         nonlocal scored_total, last_report
@@ -103,9 +142,19 @@ def main() -> int:
             last_report = now
 
     try:
-        reader = MagicMemoryReader(process_id(hwnd), on_aim, on_scored)
+        game_pid = (
+            backend.get_process_id(hwnd)
+            if backend is not None
+            else process_id(hwnd)
+        )
+        reader = MagicMemoryReader(game_pid, on_aim, on_scored)
     except Exception as error:
         print(f"Could not attach to game memory: {error}")
+        if backend is not None:
+            from wine_frida import print_attach_hint
+
+            backend.close()
+            print_attach_hint(error)
         return 1
 
     print("Swords & Souls magic helper v1 is ready.")
@@ -114,12 +163,12 @@ def main() -> int:
     reader_active = False
     try:
         while True:
-            if user32.GetAsyncKeyState(VK_F9) & 1:
+            if hotkey_pressed("F9"):
                 break
-            if user32.GetAsyncKeyState(VK_F8) & 1:
+            if hotkey_pressed("F8"):
                 enabled = not enabled
                 print("Automation ON." if enabled else "Automation PAUSED.")
-            focused = user32.GetForegroundWindow() == hwnd
+            focused = game_is_focused()
             wanted = bool(enabled and focused)
             if wanted != reader_active:
                 reader.set_active(wanted)
@@ -135,6 +184,8 @@ def main() -> int:
         except Exception:
             pass
         reader.close()
+        if backend is not None:
+            backend.close()
     print("Stopped.")
     return 0
 

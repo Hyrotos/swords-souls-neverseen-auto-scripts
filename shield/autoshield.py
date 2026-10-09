@@ -18,7 +18,7 @@ VK_F8 = 0x77
 VK_F9 = 0x78
 INPUT_MOUSE = 0
 MOUSEEVENTF_MOVE = 0x0001
-user32 = ctypes.windll.user32
+user32 = ctypes.windll.user32 if sys.platform == "win32" else None
 ULONG_PTR = wintypes.WPARAM
 
 
@@ -111,6 +111,21 @@ def clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, value))
 
 
+def print_ptrace_hint() -> None:
+    """Explain the usual reason Frida cannot attach on Linux."""
+    try:
+        with open("/proc/sys/kernel/yama/ptrace_scope", encoding="ascii") as file:
+            scope = int(file.read().strip())
+    except (OSError, ValueError):
+        return
+    if scope != 0:
+        print(
+            f"kernel.yama.ptrace_scope is {scope}, which blocks attaching to "
+            "the running game. Allow it until the next reboot with:"
+        )
+        print("    sudo sysctl kernel.yama.ptrace_scope=0")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
@@ -119,15 +134,46 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
-    if sys.platform != "win32":
-        print("Windows only.")
-        return 2
     args = parse_args()
-    enable_dpi_awareness()
-    hwnd = find_game_window()
+    backend = None
+    if sys.platform == "win32":
+        enable_dpi_awareness()
+        hwnd = find_game_window()
+    elif sys.platform.startswith("linux"):
+        try:
+            from linux_platform import LinuxPlatform
+
+            backend = LinuxPlatform(WINDOW_TITLE)
+            hwnd = backend.find_game_window()
+        except Exception as error:
+            print(f"Could not initialize the Linux/X11 backend: {error}")
+            print("Check the X11 display and install shield/requirements.txt.")
+            return 2
+    else:
+        print(f"Unsupported platform: {sys.platform}")
+        return 2
     if hwnd is None:
         print("Game window was not found. Start the game first.")
+        if backend is not None:
+            backend.close()
         return 1
+
+    def game_is_focused() -> bool:
+        if backend is not None:
+            return backend.is_focused(hwnd)
+        return user32.GetForegroundWindow() == hwnd
+
+    def move_mouse(dx: int, dy: int) -> None:
+        if backend is not None:
+            backend.send_mouse_move(dx, dy)
+        else:
+            send_mouse_move(dx, dy)
+
+    def hotkey_pressed(key: str) -> bool:
+        if backend is not None:
+            return backend.consume_hotkey(key)
+        virtual_key = VK_F8 if key == "F8" else VK_F9
+        return bool(user32.GetAsyncKeyState(virtual_key) & 1)
 
     # Start safely paused. F8 enables the automation when the player is ready.
     enabled = False
@@ -138,7 +184,7 @@ def main() -> int:
 
     def on_aim(payload: dict) -> None:
         nonlocal last_move, last_report, last_mode
-        if not enabled or user32.GetForegroundWindow() != hwnd:
+        if not enabled or not game_is_focused():
             return
         error_x = float(payload["targetX"]) - float(payload["currentX"])
         error_y = float(payload["targetY"]) - float(payload["currentY"])
@@ -156,7 +202,7 @@ def main() -> int:
             if dy == 0:
                 dy = -1 if error_y > 0 else 1
             if not args.dry_run:
-                send_mouse_move(dx, dy)
+                move_mouse(dx, dy)
             mode = str(payload.get("mode", ""))
             if mode != last_mode or now - last_report >= 1.0:
                 label = "BLOCK"
@@ -169,9 +215,18 @@ def main() -> int:
                 last_report = now
 
     try:
-        reader = ShieldMemoryReader(window_process_id(hwnd), on_aim)
+        process_id = (
+            backend.get_process_id(hwnd)
+            if backend is not None
+            else window_process_id(hwnd)
+        )
+        reader = ShieldMemoryReader(process_id, on_aim)
     except Exception as error:
         print(f"Could not attach to game memory: {error}")
+        if backend is not None:
+            backend.close()
+            if isinstance(error, PermissionError):
+                print_ptrace_hint()
         return 1
 
     print("Swords & Souls shield helper v3 is ready.")
@@ -183,12 +238,12 @@ def main() -> int:
     reader_active = False
     try:
         while True:
-            if user32.GetAsyncKeyState(VK_F9) & 1:
+            if hotkey_pressed("F9"):
                 break
-            if user32.GetAsyncKeyState(VK_F8) & 1:
+            if hotkey_pressed("F8"):
                 enabled = not enabled
                 print("Automation ON." if enabled else "Automation PAUSED.")
-            focused = user32.GetForegroundWindow() == hwnd
+            focused = game_is_focused()
             wanted = bool(enabled and focused)
             if wanted != reader_active:
                 reader.set_active(wanted)
@@ -204,6 +259,8 @@ def main() -> int:
             reader.close()
         except Exception:
             pass
+        if backend is not None:
+            backend.close()
     print("Stopped.")
     return 0
 

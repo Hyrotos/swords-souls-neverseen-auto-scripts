@@ -3,15 +3,16 @@
 [English version](README_EN.md)
 
 Набор из пяти Python-скриптов для автоматизации тренировок в
-**Swords & Souls Neverseen** на Windows:
+**Swords & Souls Neverseen**. Все режимы работают на Windows, а также на Linux,
+если игра запущена через Proton в сеансе X11/XWayland:
 
 | Тренировка | Папка | Запуск |
 | --- | --- | --- |
-| Меч | [`sword`](sword) | `sword/START_FIXED.bat` |
-| Лук | [`archery`](archery) | `archery/START.bat` |
-| Магия | [`magic`](magic) | `magic/START.bat` |
-| Защита | [`shield`](shield) | `shield/START.bat` |
-| Ловкость | [`agility`](agility) | `agility/START.bat` |
+| Меч | [`sword`](sword) | Windows: `START_FIXED.bat`; Linux/Proton: `START_LINUX.sh` |
+| Лук | [`archery`](archery) | Windows: `START.bat`; Linux/Proton: `START_LINUX.sh` |
+| Магия | [`magic`](magic) | Windows: `START.bat`; Linux/Proton: `START_LINUX.sh` |
+| Защита | [`shield`](shield) | Windows: `START.bat`; Linux/Proton: `START_LINUX.sh` |
+| Ловкость | [`agility`](agility) | Windows: `START.bat`; Linux/Proton: `START_LINUX.sh` |
 
 Скрипты читают состояние запущенной игры через Frida и отправляют обычные
 клавиатурные или мышиные команды. Файлы игры не изменяются.
@@ -25,7 +26,7 @@
 
 ## Требования
 
-- Windows 10 или Windows 11 (64-bit);
+- Windows 10/11 (64-bit) либо Linux + Steam/Proton;
 - Steam-версия Swords & Souls Neverseen;
 - 64-битный Python 3.11 или 3.12;
 - игра и скрипт должны быть запущены от одного пользователя Windows.
@@ -50,17 +51,27 @@ python --version
 
 ## Установка библиотек
 
-Откройте PowerShell или командную строку в любом месте и выполните:
+Откройте PowerShell или командную строку в корне репозитория и выполните:
 
 ```powershell
-python -m pip install "frida>=17.2,<18" "mss>=10.0" "numpy>=2.0" "opencv-python>=4.10"
+python -m pip install -r requirements.txt
 ```
+
+На Linux установите зависимости в виртуальное окружение
+проекта; Linux-зависимость X11 выберется автоматически.
 
 ## Запуск
 
-1. Запустите игру и откройте нужную тренировку.
-2. Откройте папку нужной тренировки и запустите находящийся там BAT-файл.
-3. Вернитесь в окно игры.
+В Windows запустите игру, откройте нужную тренировку и запустите BAT-файл
+соответствующего режима. В Linux запустите игру через Proton в
+X11/XWayland и выполните из корня репозитория файл запуска нужного режима,
+например `bash shield/START_LINUX.sh`.
+
+Чтобы запустить все пять помощников сразу, используйте `START_ALL.bat` в
+Windows или `bash START_ALL_LINUX.sh` в Linux. Каждый помощник реагирует только
+на свою тренировку, поэтому автоматически играет тот, чья тренировка открыта.
+Не запускайте вместо этого несколько отдельных файлов запуска одновременно: в
+Linux помощники в разных процессах могут обрушить игру при завершении.
 
 Управление во всех режимах:
 
