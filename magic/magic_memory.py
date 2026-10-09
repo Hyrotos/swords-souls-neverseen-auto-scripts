@@ -7,7 +7,7 @@ import threading
 
 import frida
 
-from wine_frida import agent_source
+from wine_frida import AgentErrors, agent_source
 
 
 _AGENT_SOURCE = r"""
@@ -348,18 +348,19 @@ class MagicMemoryReader:
         self._on_aim = on_aim
         self._on_scored = on_scored
         self._on_status = on_status
+        self._errors = AgentErrors(on_status)
         self._lock = threading.Lock()
         self._closed = False
         # Under Wine this also makes the process safe for Frida to attach.
         source = agent_source(pid, _AGENT_SOURCE)
         self._session = frida.attach(pid)
-        self._script = self._session.create_script(source)
+        self._script = self._session.create_script(source, name="magic")
         self._script.on("message", self._handle_message)
         self._script.load()
 
     def _handle_message(self, message: dict, _data: bytes | None) -> None:
         if message.get("type") != "send":
-            self._on_status(f"Memory error: {message.get('description', message)}")
+            self._errors.report(message)
             return
         payload = message.get("payload", {})
         kind = payload.get("kind")

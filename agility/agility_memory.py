@@ -7,7 +7,7 @@ import threading
 
 import frida
 
-from wine_frida import agent_source
+from wine_frida import AgentErrors, agent_source
 
 
 _AGENT_SOURCE = r"""
@@ -77,19 +77,20 @@ function start() {
     }
 
     function findOne(targetClass) {
-        let object = ptr(0);
+        const found = [];
         const callback = new NativeCallback(function (array, count, _userData) {
-            for (let index = 0; index < count && object.isNull(); ++index) {
-                const candidate = array.add(
-                    index * Process.pointerSize).readPointer();
-                if (unityAlive(candidate)) object = candidate;
+            for (let index = 0; index < count; ++index) {
+                found.push(array.add(index * Process.pointerSize).readPointer());
             }
         }, 'void', ['pointer', 'int', 'pointer'], abi);
         const state = liveBegin(
             targetClass, 10000, callback, ptr(0), noopWorld, noopWorld);
         liveStatics(state);
         liveEnd(state);
-        return object;
+        for (const candidate of found) {
+            if (unityAlive(candidate)) return candidate;
+        }
+        return ptr(0);
     }
 
     // Exact methods from the shipped Assembly-CSharp build.
@@ -322,21 +323,19 @@ class AgilityMemoryReader:
     ) -> None:
         self._on_dodge = on_dodge
         self._on_status = on_status
+        self._errors = AgentErrors(on_status)
         self._lock = threading.Lock()
         self._closed = False
         # Under Wine this also makes the process safe for Frida to attach.
         source = agent_source(pid, _AGENT_SOURCE)
         self._session = frida.attach(pid)
-        self._script = self._session.create_script(source)
+        self._script = self._session.create_script(source, name="agility")
         self._script.on("message", self._handle_message)
         self._script.load()
 
     def _handle_message(self, message: dict, _data: bytes | None) -> None:
         if message.get("type") == "error":
-            self._on_status(
-                "Memory reader error: "
-                + str(message.get("description", "unknown Frida error"))
-            )
+            self._errors.report(message)
             return
         payload = message.get("payload")
         if not isinstance(payload, dict):

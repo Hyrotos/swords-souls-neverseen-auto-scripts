@@ -16,6 +16,7 @@ import ctypes
 import os
 import struct
 import sys
+import time
 
 _PTRACE_GETREGS = 12
 _PTRACE_SETREGS = 13
@@ -251,10 +252,17 @@ function native(name, result, args) {
 const unityClassCache = new Map();
 let unityClassLookup = null;
 
-function isUnityObject(object) {
+// Returns the object's class, or NULL when the memory no longer holds a
+// managed object (a collected object is zeroed).  The low bit of the vtable
+// pointer is masked because Unity's liveness walk uses it as a mark.
+function managedClass(object) {
+    const vtable = object.readPointer().and(ptr(1).not());
+    return vtable.isNull() ? ptr(0) : vtable.readPointer();
+}
+
+function isUnityClass(klass) {
     if (unityClassLookup === null) {
         unityClassLookup = {
-            objectGetClass: native('mono_object_get_class', 'pointer', ['pointer']),
             getParent: native('mono_class_get_parent', 'pointer', ['pointer']),
             getName: native('mono_class_get_name', 'pointer', ['pointer']),
             getNamespace: native(
@@ -262,7 +270,6 @@ function isUnityObject(object) {
         };
     }
     const lookup = unityClassLookup;
-    const klass = lookup.objectGetClass(object);
     const key = klass.toString();
     let result = unityClassCache.get(key);
     if (result === undefined) {
@@ -283,7 +290,9 @@ function isUnityObject(object) {
 
 function unityAlive(object) {
     if (object.isNull()) return false;
-    if (!isUnityObject(object)) return true;
+    const klass = managedClass(object);
+    if (klass.isNull()) return false;
+    if (!isUnityClass(klass)) return true;
     return !object.add(2 * Process.pointerSize).readPointer().isNull();
 }
 
@@ -394,3 +403,32 @@ def print_attach_hint(error: Exception) -> None:
             "the running game. Allow it until the next reboot with:"
         )
         print("    sudo sysctl kernel.yama.ptrace_scope=0")
+
+
+class AgentErrors:
+    """Report errors raised inside a Frida agent, with their origin."""
+
+    def __init__(self, on_status, interval: float = 2.0) -> None:
+        self._on_status = on_status
+        self._interval = interval
+        self._last: dict[str, float] = {}
+        self._suppressed: dict[str, int] = {}
+
+    def report(self, message: dict) -> None:
+        text = str(message.get("description", "unknown Frida agent error"))
+        frames = [
+            line.strip().removeprefix("at ")
+            for line in str(message.get("stack") or "").splitlines()[1:4]
+        ]
+        if frames:
+            text += " [" + " < ".join(frames) + "]"
+        # A failing poll repeats on every pass; show each error only now and
+        # then, with the number of repetitions in between.
+        now = time.monotonic()
+        if now - self._last.get(text, -self._interval) < self._interval:
+            self._suppressed[text] = self._suppressed.get(text, 0) + 1
+            return
+        repeats = self._suppressed.pop(text, 0)
+        self._last[text] = now
+        suffix = f" (+{repeats} more)" if repeats else ""
+        self._on_status(f"Memory reader error: {text}{suffix}")

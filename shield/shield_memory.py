@@ -8,6 +8,8 @@ import threading
 
 import frida
 
+from wine_frida import AgentErrors
+
 
 _AGENT_SOURCE = r"""
 // On Linux the game is a Wine/Proton process: Frida does not list PE modules
@@ -59,10 +61,17 @@ function native(name, result, args) {
 const unityClassCache = new Map();
 let unityClassLookup = null;
 
-function isUnityObject(object) {
+// Returns the object's class, or NULL when the memory no longer holds a
+// managed object (a collected object is zeroed).  The low bit of the vtable
+// pointer is masked because Unity's liveness walk uses it as a mark.
+function managedClass(object) {
+    const vtable = object.readPointer().and(ptr(1).not());
+    return vtable.isNull() ? ptr(0) : vtable.readPointer();
+}
+
+function isUnityClass(klass) {
     if (unityClassLookup === null) {
         unityClassLookup = {
-            objectGetClass: native('mono_object_get_class', 'pointer', ['pointer']),
             getParent: native('mono_class_get_parent', 'pointer', ['pointer']),
             getName: native('mono_class_get_name', 'pointer', ['pointer']),
             getNamespace: native(
@@ -70,7 +79,6 @@ function isUnityObject(object) {
         };
     }
     const lookup = unityClassLookup;
-    const klass = lookup.objectGetClass(object);
     const key = klass.toString();
     let result = unityClassCache.get(key);
     if (result === undefined) {
@@ -91,7 +99,9 @@ function isUnityObject(object) {
 
 function unityAlive(object) {
     if (object.isNull()) return false;
-    if (!isUnityObject(object)) return true;
+    const klass = managedClass(object);
+    if (klass.isNull()) return false;
+    if (!isUnityClass(klass)) return true;
     return !object.add(2 * Process.pointerSize).readPointer().isNull();
 }
 
@@ -528,6 +538,7 @@ class ShieldMemoryReader:
     ) -> None:
         self._on_aim = on_aim
         self._on_status = on_status
+        self._errors = AgentErrors(on_status)
         self._lock = threading.Lock()
         self._closed = False
         mono_base = "null"
@@ -539,16 +550,15 @@ class ShieldMemoryReader:
             prepare_for_frida(pid)
         self._session = frida.attach(pid)
         self._script = self._session.create_script(
-            f"const WINE_MONO_BASE = {mono_base};\n{_AGENT_SOURCE}"
+            f"const WINE_MONO_BASE = {mono_base};\n{_AGENT_SOURCE}",
+            name="shield",
         )
         self._script.on("message", self._handle_message)
         self._script.load()
 
     def _handle_message(self, message: dict, _data: bytes | None) -> None:
         if message.get("type") == "error":
-            self._on_status(
-                f"Memory reader error: {message.get('description', 'unknown error')}"
-            )
+            self._errors.report(message)
             return
         payload = message.get("payload")
         if not isinstance(payload, dict):

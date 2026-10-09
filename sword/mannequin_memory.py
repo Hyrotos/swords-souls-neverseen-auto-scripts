@@ -13,7 +13,7 @@ import threading
 
 import frida
 
-from wine_frida import agent_source
+from wine_frida import AgentErrors, agent_source
 
 
 _AGENT_SOURCE = r"""
@@ -380,19 +380,19 @@ class MannequinMemoryReader:
         self._on_parry = on_parry
         self._on_item = on_item
         self._on_status = on_status
+        self._errors = AgentErrors(on_status)
         self._lock = threading.Lock()
         self._closed = False
         # Under Wine this also makes the process safe for Frida to attach.
         source = agent_source(pid, _AGENT_SOURCE)
         self._session = frida.attach(pid)
-        self._script = self._session.create_script(source)
+        self._script = self._session.create_script(source, name="sword")
         self._script.on("message", self._handle_message)
         self._script.load()
 
     def _handle_message(self, message: dict, _data: bytes | None) -> None:
         if message.get("type") == "error":
-            description = message.get("description", "unknown Frida agent error")
-            self._on_status(f"Memory reader error: {description}")
+            self._errors.report(message)
             return
         payload = message.get("payload")
         if not isinstance(payload, dict):
